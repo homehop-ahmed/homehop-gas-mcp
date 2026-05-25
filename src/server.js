@@ -50,7 +50,7 @@ const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
 function makeServer() {
   const server = new McpServer({
     name: 'homehop-gas-mcp',
-    version: '0.2.0',
+    version: '0.3.0',
   });
 
   // ----- gas_get_content -----------------------------------------------------
@@ -148,8 +148,6 @@ function makeServer() {
       inputSchema: { spreadsheetId: z.string().describe('Google Sheets file ID') },
     },
     async ({ spreadsheetId }) => {
-      // Bound scripts live as Drive files with mimeType=application/vnd.google-apps.script
-      // and the container as one of their parents (in supportsAllDrives mode).
       const q = `mimeType='application/vnd.google-apps.script' and '${spreadsheetId}' in parents and trashed=false`;
       let res;
       try {
@@ -186,6 +184,76 @@ function makeServer() {
         requestBody: { description },
       });
       return { content: [{ type: 'text', text: JSON.stringify(res.data, null, 2) }] };
+    }
+  );
+
+  // ----- gas_run_function (NEW in v0.3.0) ------------------------------------
+  server.registerTool(
+    'gas_run_function',
+    {
+      title: 'Execute a function inside an Apps Script project',
+      description: 'Calls Apps Script API scripts.run to execute a function server-side and return its result. Default devMode=true runs against HEAD (no API Executable deployment needed) — caller must own the script. Function return value must be JSON-serializable. Apps Script has a 6-min execution limit per call.',
+      inputSchema: {
+        scriptId: z.string().describe('Apps Script project ID'),
+        functionName: z.string().describe('Name of the function to execute (top-level, no parens)'),
+        parameters: z.array(z.any()).optional().describe('Positional arguments passed to the function. Defaults to []'),
+        devMode: z.boolean().optional().describe('Run against HEAD (true) vs latest deployed version (false). Defaults to true.'),
+      },
+    },
+    async ({ scriptId, functionName, parameters, devMode }) => {
+      try {
+        const res = await script.scripts.run({
+          scriptId,
+          requestBody: {
+            function: functionName,
+            parameters: parameters || [],
+            devMode: devMode ?? true,
+          },
+        });
+        const d = res.data || {};
+        if (d.error) {
+          const err = d.error;
+          const detail = (err.details && err.details[0]) || {};
+          return {
+            content: [{ type: 'text', text: JSON.stringify({
+              ok: false,
+              errorType: detail.errorType || 'ScriptError',
+              errorMessage: detail.errorMessage || err.message,
+              scriptStackTraceElements: detail.scriptStackTraceElements || null,
+              raw: err,
+            }, null, 2) }],
+          };
+        }
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: true,
+            done: d.done,
+            result: d.response ? d.response.result : null,
+          }, null, 2) }],
+        };
+      } catch (e) {
+        const status = e.code || e.status || (e.response && e.response.status);
+        const body = (e.response && e.response.data) || {};
+        const apiErr = body.error || {};
+        const isApiNotEnabled = (apiErr.status === 'PERMISSION_DENIED' || status === 403) &&
+                                /Apps Script API has not been used/i.test(apiErr.message || '');
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: false,
+            httpStatus: status || null,
+            errorMessage: apiErr.message || e.message,
+            errorStatus: apiErr.status || null,
+            hint: isApiNotEnabled
+              ? 'Enable the Apps Script API in the GCP project hosting this MCP server. console.cloud.google.com → APIs & Services → Library → "Apps Script API" → Enable. Wait 1-2 min, then retry.'
+              : (status === 403 || apiErr.status === 'PERMISSION_DENIED')
+                ? 'PERMISSION_DENIED. Likely cause: the Apps Script project is not linked to the same GCP project as this server\'s OAuth client. Open the script editor → Project Settings → "Change project" → enter the homehop-mcp GCP project number.'
+                : (status === 401 || apiErr.status === 'UNAUTHENTICATED')
+                  ? 'Auth failed. The refresh token may be missing the script.scriptapp scope. Re-run `npm run setup` locally and replace GOOGLE_REFRESH_TOKEN in Railway.'
+                  : null,
+            raw: apiErr.details || body,
+          }, null, 2) }],
+        };
+      }
     }
   );
 
@@ -450,7 +518,6 @@ function makeServer() {
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
-// Optional bearer-token gate — set MCP_SHARED_SECRET env var to enable.
 app.use('/mcp', (req, res, next) => {
   if (!SHARED_SECRET) return next();
   const got = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
@@ -458,7 +525,6 @@ app.use('/mcp', (req, res, next) => {
   next();
 });
 
-// Per-session transports keyed by mcp-session-id header.
 const transports = new Map();
 
 app.all('/mcp', async (req, res) => {
@@ -469,7 +535,6 @@ app.all('/mcp', async (req, res) => {
     if (sid && transports.has(sid)) {
       transport = transports.get(sid);
     } else if (req.method === 'POST') {
-      // New session — body should be initialize request.
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSid) => transports.set(newSid, transport),

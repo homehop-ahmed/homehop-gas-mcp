@@ -1,6 +1,6 @@
 {
   "name": "homehop-gas-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Remote MCP server exposing Google Apps Script + Sheets APIs to claude.ai",
   "main": "src/server.js",
