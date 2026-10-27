@@ -20,6 +20,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import { requireTabRange } from './rangeGuard.js';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -342,6 +343,7 @@ function makeServer() {
       },
     },
     async ({ spreadsheetId, tabName, rows }) => {
+      await requireTabRange(sheets, spreadsheetId, tabName);   // refuse a tab that does not exist
       const res = await sheets.spreadsheets.values.append({
         spreadsheetId,
         range: tabName,
@@ -364,7 +366,7 @@ function makeServer() {
     'sheets_update_range',
     {
       title: 'Overwrite cells in a range',
-      description: 'Write values into a specific A1 range. Values 2D array must match range dimensions. Use for in-place updates (e.g. updating a status column).',
+      description: 'Write values into a specific A1 range. Values 2D array must match range dimensions. Use for in-place updates (e.g. updating a status column). The range MUST start with the tab name and "!" (e.g. "_Tasks_Private!I2424"); a range without an existing tab name is refused.',
       inputSchema: {
         spreadsheetId: z.string(),
         range: z.string().describe('A1 notation, e.g. "Property_Costs!K2:K500"'),
@@ -372,6 +374,7 @@ function makeServer() {
       },
     },
     async ({ spreadsheetId, range, values }) => {
+      await requireTabRange(sheets, spreadsheetId, range);     // refuse "I2424" with no tab name
       const res = await sheets.spreadsheets.values.update({
         spreadsheetId,
         range,
@@ -399,6 +402,7 @@ function makeServer() {
       },
     },
     async ({ spreadsheetId, range }) => {
+      await requireTabRange(sheets, spreadsheetId, range);     // same guard as update
       await sheets.spreadsheets.values.clear({ spreadsheetId, range });
       return { content: [{ type: 'text', text: JSON.stringify({ cleared: range }, null, 2) }] };
     }
