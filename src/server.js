@@ -538,6 +538,11 @@ app.all('/mcp', async (req, res) => {
 
     if (sid && transports.has(sid)) {
       transport = transports.get(sid);
+    } else if (sid) {
+      // A session id this process does not know (the server restarted, e.g. after a Railway redeploy).
+      // MCP Streamable HTTP: answer 404 so the client starts a new session with a fresh initialize,
+      // instead of handing the call to a fresh transport that only answers "Server not initialized".
+      return res.status(404).json({ error: 'session not found - initialize a new session' });
     } else if (req.method === 'POST') {
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
