@@ -128,6 +128,22 @@
 
 # 
 
+## Sign-in (v0.4.0)
+
+The bridge can ask the HomeHop connector who is calling. Three settings, all optional:
+
+| Variable | What it does |
+|---|---|
+| `AUTH_MODE` | `on` makes `/mcp` demand sign-in too. Anything else (or unset) leaves `/mcp` open as before. |
+| `HH_CONNECTOR_URL` | Address of the HomeHop connector, for example `https://connector.example`. Without it the door is not ready. |
+| `PUBLIC_URL` | This bridge's own public address, for example `https://bridge.example`. Falls back to `RAILWAY_PUBLIC_DOMAIN`. Used in the sign-in challenge. |
+
+Two paths serve the same tools: `/mcp` (open until `AUTH_MODE` is `on`) and `/secure/mcp` (always demands sign-in).
+
+Who is let in: a signed-in person with the admin role, or a job whose scopes include `script_bridge:write` or `*:*`. Anyone else gets 403 on a locked path.
+
+`/healthz` shows the mode, whether the door is ready, and a list of callers (signed in or anonymous, which client, which tools, how many calls). A caller turned away on a locked path is listed too, with who set to refused: and the status code. It never shows a token, an address, an email or a tool argument.
+
 # \## Troubleshooting
 
 # 
