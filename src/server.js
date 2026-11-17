@@ -10,8 +10,7 @@
  *   GOOGLE_CLIENT_SECRET   OAuth client secret
  *   GOOGLE_REFRESH_TOKEN   Refresh token from running `npm run setup`
  *   PORT                   (optional) HTTP port, defaults to 3000
- *   MCP_SHARED_SECRET      (optional) Bearer token required from claude.ai.
- *                          Leave unset for authless mode (URL is the secret).
+ *   AUTH_MODE, HH_CONNECTOR_URL, PUBLIC_URL   (optional) sign-in door, see README "Sign-in".
  */
 
 import express from 'express';
@@ -21,12 +20,12 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { requireTabRange } from './rangeGuard.js';
+import { createDoor } from './door.js';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
-const SHARED_SECRET = process.env.MCP_SHARED_SECRET || null;
 
 for (const [k, v] of Object.entries({ GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET, GOOGLE_REFRESH_TOKEN: REFRESH_TOKEN })) {
   if (!v) {
@@ -51,7 +50,7 @@ const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
 function makeServer() {
   const server = new McpServer({
     name: 'homehop-gas-mcp',
-    version: '0.3.0',
+    version: '0.4.0',
   });
 
   // ----- gas_get_content -----------------------------------------------------
@@ -522,16 +521,37 @@ function makeServer() {
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
-app.use('/mcp', (req, res, next) => {
-  if (!SHARED_SECRET) return next();
-  const got = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  if (got !== SHARED_SECRET) return res.status(401).json({ error: 'unauthorized' });
-  next();
+const door = createDoor({ env: process.env });
+
+// One guard for both paths. /secure/mcp always demands sign-in; /mcp only when AUTH_MODE is on.
+app.use(['/mcp', '/secure/mcp'], async (req, res, next) => {
+  try {
+    const secure = req.baseUrl === '/secure/mcp';
+    const got = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    const d = await door.decide({ token: got || null, secure });
+    if (d.status !== 200) {
+      if (d.status === 401) {
+        const c = door.challenge(secure ? '/secure/mcp' : '/mcp');
+        if (c) res.set('WWW-Authenticate', c);
+      }
+      return res.status(d.status).json({ error: d.error });
+    }
+    const body = req.body;
+    const msg = Array.isArray(body) ? body[0] : body;
+    const label = door.clientLabel({ body, userAgent: req.headers['user-agent'], sessionId: req.headers['mcp-session-id'] });
+    const tool = msg && msg.method === 'tools/call' && msg.params ? msg.params.name : undefined;
+    door.record({ who: d.who, client: label, path: secure ? 'secure' : 'mcp', tool });
+    req.clientLabel = label;
+    next();
+  } catch (e) {
+    console.error('door error:', e);
+    if (!res.headersSent) res.status(500).json({ error: 'door error' });
+  }
 });
 
 const transports = new Map();
 
-app.all('/mcp', async (req, res) => {
+async function mcpHandler(req, res) {
   try {
     const sid = req.headers['mcp-session-id'];
     let transport;
@@ -546,10 +566,16 @@ app.all('/mcp', async (req, res) => {
     } else if (req.method === 'POST') {
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (newSid) => transports.set(newSid, transport),
+        onsessioninitialized: (newSid) => {
+          transports.set(newSid, transport);
+          door.rememberClient(newSid, req.clientLabel);
+        },
       });
       transport.onclose = () => {
-        if (transport.sessionId) transports.delete(transport.sessionId);
+        if (transport.sessionId) {
+          transports.delete(transport.sessionId);
+          door.forgetClient(transport.sessionId);
+        }
       };
       const server = makeServer();
       await server.connect(transport);
@@ -562,12 +588,23 @@ app.all('/mcp', async (req, res) => {
     console.error('MCP error:', e);
     if (!res.headersSent) res.status(500).json({ error: e.message });
   }
-});
+}
 
-app.get('/healthz', (_, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+app.all('/mcp', mcpHandler);
+app.all('/secure/mcp', mcpHandler);
+
+const sendMeta = (res, m) => (m ? res.json(m) : res.status(404).json({ error: 'not found' }));
+app.get('/.well-known/oauth-protected-resource/secure/mcp', (_, res) => sendMeta(res, door.metadata('/secure/mcp')));
+app.get('/.well-known/oauth-protected-resource/mcp', (_, res) =>
+  sendMeta(res, door.mode === 'on' ? door.metadata('/mcp') : null));
+app.get('/.well-known/oauth-protected-resource', (_, res) =>
+  sendMeta(res, door.metadata(door.mode === 'on' ? '/mcp' : '/secure/mcp')));
+
+app.get('/healthz', (_, res) => res.json({ ok: true, ts: new Date().toISOString(), auth: door.snapshot() }));
 app.get('/', (_, res) => res.send('homehop-gas-mcp is running. POST /mcp for MCP protocol.'));
 
 app.listen(PORT, () => {
   console.log(`homehop-gas-mcp listening on :${PORT}`);
-  console.log(`Auth mode: ${SHARED_SECRET ? 'bearer-token' : 'authless (URL is the secret)'}`);
+  const snap = door.snapshot();
+  console.log(`Auth mode: ${snap.mode}, door ready: ${snap.door_ready ? 'yes' : 'no'}`);
 });
