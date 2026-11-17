@@ -525,8 +525,9 @@ const door = createDoor({ env: process.env });
 
 // One guard for both paths. /secure/mcp always demands sign-in; /mcp only when AUTH_MODE is on.
 app.use(['/mcp', '/secure/mcp'], async (req, res, next) => {
+  const secure = String(req.baseUrl || '').toLowerCase() === '/secure/mcp';
+  const locked = secure || door.mode === 'on';
   try {
-    const secure = req.baseUrl === '/secure/mcp';
     const got = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
     const d = await door.decide({ token: got || null, secure });
     if (d.status !== 200) {
@@ -545,7 +546,9 @@ app.use(['/mcp', '/secure/mcp'], async (req, res, next) => {
     next();
   } catch (e) {
     console.error('door error:', e);
-    if (!res.headersSent) res.status(500).json({ error: 'door error' });
+    if (res.headersSent) return;
+    if (!locked) return next();
+    res.status(500).json({ error: 'door error' });
   }
 });
 
