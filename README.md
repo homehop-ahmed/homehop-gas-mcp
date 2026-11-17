@@ -142,7 +142,7 @@ Two paths serve the same tools: `/mcp` (open until `AUTH_MODE` is `on`) and `/se
 
 Who is let in: a signed-in person with the admin role, or a job whose scopes include `script_bridge:write` or `*:*`. Anyone else gets 403 on a locked path.
 
-`/healthz` shows the mode, whether the door is ready, and a list of callers (signed in or anonymous, which client, which tools, how many calls). It never shows a token, an address, an email or a tool argument.
+`/healthz` shows the mode, whether the door is ready, and a list of callers (signed in or anonymous, which client, which tools, how many calls). A caller turned away on a locked path is listed too, with who set to refused: and the status code. It never shows a token, an address, an email or a tool argument.
 
 # \## Troubleshooting
 

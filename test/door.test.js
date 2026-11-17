@@ -247,3 +247,14 @@ test('metadata and challenge', () => {
   assert.equal(noconn.metadata('/mcp'), null);
   assert.ok(noconn.challenge('/mcp'));
 });
+
+test('a refused call is listed once per caller with the status in who', () => {
+  const { door } = make();
+  door.record({ who: 'refused:401', client: 'x|y', path: 'mcp', tool: 'sheets_read_range' });
+  door.record({ who: 'refused:401', client: 'x|y', path: 'mcp', tool: 'sheets_read_range' });
+  const rows = door.snapshot().callers;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].who, 'refused:401');
+  assert.equal(rows[0].calls, 2);
+  assert.deepEqual(rows[0].tools, ['sheets_read_range']);
+});

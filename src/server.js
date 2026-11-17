@@ -529,18 +529,19 @@ app.use(['/mcp', '/secure/mcp'], async (req, res, next) => {
   const locked = secure || door.mode === 'on';
   try {
     const got = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    const body = req.body;
+    const msg = Array.isArray(body) ? body[0] : body;
+    const label = door.clientLabel({ body, userAgent: req.headers['user-agent'], sessionId: req.headers['mcp-session-id'] });
+    const tool = msg && msg.method === 'tools/call' && msg.params ? msg.params.name : undefined;
     const d = await door.decide({ token: got || null, secure });
     if (d.status !== 200) {
       if (d.status === 401) {
         const c = door.challenge(secure ? '/secure/mcp' : '/mcp');
         if (c) res.set('WWW-Authenticate', c);
       }
+      door.record({ who: 'refused:' + d.status, client: label, path: secure ? 'secure' : 'mcp', tool });
       return res.status(d.status).json({ error: d.error });
     }
-    const body = req.body;
-    const msg = Array.isArray(body) ? body[0] : body;
-    const label = door.clientLabel({ body, userAgent: req.headers['user-agent'], sessionId: req.headers['mcp-session-id'] });
-    const tool = msg && msg.method === 'tools/call' && msg.params ? msg.params.name : undefined;
     door.record({ who: d.who, client: label, path: secure ? 'secure' : 'mcp', tool });
     req.clientLabel = label;
     next();
